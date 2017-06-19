@@ -1,11 +1,13 @@
 {
-    "repositories": [
-        {
-            "type": "vcs",
-            "url": "https://github.com/jumbojett/OpenID-Connect-PHP"
-        }
-    ],
+    "name": "zxldev/openid-connect-php",
+    "description": "Bare-bones OpenID Connect client",
     "require": {
-        "zxldev/OpenID-Connect-PHP": "dev-oidc"
+        "php": ">=5.4",
+        "phpseclib/phpseclib" : "2.0.1",
+        "ext-json": "*",
+        "ext-curl": "*"
+    },
+    "autoload": {
+        "classmap": ["OpenIDConnectClient.php"]
     }
 }
