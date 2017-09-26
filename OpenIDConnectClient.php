@@ -121,12 +121,12 @@ class OpenIDConnectClient
      * @var string full system path to the SSL certificate
      */
     private $certPath;
-    
+
     /**
      * @var bool Verify SSL peer on transactions
      */
     private $verifyPeer = true;
-    
+
     /**
      * @var bool Verify peer hostname on transactions
      */
@@ -142,12 +142,12 @@ class OpenIDConnectClient
      */
     private $refreshToken;
 
-    /** 
+    /**
      * @var string if we acquire an id token it will be stored here
      */
     private $idToken;
 
-    /** 
+    /**
      * @var string stores the token response
      */
     private $tokenResponse;
@@ -189,6 +189,9 @@ class OpenIDConnectClient
      * @param $client_secret string optional
      *
      */
+
+    private $app_redirect_url = "";
+
     public function __construct($provider_url = null, $client_id = null, $client_secret = null) {
         $this->setProviderURL($provider_url);
         $this->clientID = $client_id;
@@ -234,14 +237,15 @@ class OpenIDConnectClient
                 }
                 throw new OpenIDConnectClientException('Got response: ' . $token_json->error);
             }
-
+            $state = $this->getState();
             // Do an OpenID Connect session check
-            if ($_REQUEST['state'] != $this->getState()) {
+            if ($_REQUEST['state'] != $state) {
                 throw new OpenIDConnectClientException("Unable to determine state");
             }
-		
-	    // Cleanup state
-	    $this->unsetState();
+
+            $this->app_redirect_url = json_decode(base64_decode($state), true)["redirect_uri"];
+            // Cleanup state
+            $this->unsetState();
 
             if (!property_exists($token_json, 'id_token')) {
                 throw new OpenIDConnectClientException("User did not authorize openid scope.");
@@ -272,7 +276,7 @@ class OpenIDConnectClient
 
                 // Save the id token
                 $this->idToken = $token_json->id_token;
-                
+
                 // Save the access token
                 $this->accessToken = $token_json->access_token;
 
@@ -358,8 +362,8 @@ class OpenIDConnectClient
 	    $value = false;
 	    if(isset($this->wellKnown->{$param})){
                 $value = $this->wellKnown->{$param};
-            }	
-	    
+            }
+
             if ($value) {
                 $this->providerConfig[$param] = $value;
             } elseif(isset($default)) {
@@ -409,7 +413,7 @@ class OpenIDConnectClient
          * Support of 'ProxyReverse' configurations.
          */
 
-        $protocol = @$_SERVER['HTTP_X_FORWARDED_PROTO'] 
+        $protocol = @$_SERVER['HTTP_X_FORWARDED_PROTO']
                   ?: @$_SERVER['REQUEST_SCHEME']
                   ?: ((isset($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] == "on") ? "https" : "http");
 
@@ -425,6 +429,17 @@ class OpenIDConnectClient
 
         return sprintf('%s://%s%s/%s', $protocol, $host, $port, @trim(reset(explode("?", $_SERVER['REQUEST_URI'])), '/'));
     }
+
+    public function getRedirectURLParams()
+    {
+        return $_SERVER['REQUEST_URI'];
+    }
+
+    public function getAppRedirectUrl()
+    {
+        return $this->app_redirect_url;
+    }
+
 
     /**
      * Used for arbitrary value generation for nonces and state
@@ -443,13 +458,16 @@ class OpenIDConnectClient
 
         $auth_endpoint = $this->getProviderConfigValue("authorization_endpoint");
         $response_type = "code";
-        
+
         // Generate and store a nonce in the session
         // The nonce is an arbitrary value
         $nonce = $this->setNonce($this->generateRandString());
 
         // State essentially acts as a session key for OIDC
-        $state = $this->setState($this->generateRandString());
+        $state = $this->setState(base64_encode(json_encode(array(
+            'r' => $this->generateRandString(),
+            "redirect_uri" => $this->getRedirectURLParams()
+        ))));
 
         $auth_params = array_merge($this->authParams, array(
             'response_type' => $response_type,
@@ -469,7 +487,7 @@ class OpenIDConnectClient
         if (sizeof($this->responseTypes) > 0) {
             $auth_params = array_merge($auth_params, array('response_type' => implode(' ', $this->responseTypes)));
         }
-        
+
         $auth_endpoint .= (strpos($auth_endpoint, '?') === false ? '?' : '&') . http_build_query($auth_params, null, '&');
 
         session_commit();
@@ -501,7 +519,7 @@ class OpenIDConnectClient
         return json_decode($this->fetchURL($token_endpoint, $post_params, $headers));
     }
 
-    
+
     /**
      * Requests ID and Access tokens
      *
@@ -680,7 +698,7 @@ class OpenIDConnectClient
             && ( !isset($claims->at_hash) || $claims->at_hash == $expecte_at_hash )
         );
     }
-	
+
     /**
      * @param string $str
      * @return string
@@ -730,27 +748,35 @@ class OpenIDConnectClient
      * @return mixed
      *
      */
-    public function requestUserInfo($attribute = null) {
-
-        $user_info_endpoint = $this->getProviderConfigValue("userinfo_endpoint");
-        $schema = 'openid';
-
-        $user_info_endpoint .= "?schema=" . $schema;
-
-        //The accessToken has to be send in the Authorization header, so we create a new array with only this header.
-        $headers = array("Authorization: Bearer {$this->accessToken}");
-
-        $user_json = json_decode($this->fetchURL($user_info_endpoint,null,$headers));
-
-        $this->userInfo = $user_json;
-
-        if($attribute === null) {
-            return $this->userInfo;
-        } else if (array_key_exists($attribute, $this->userInfo)) {
-            return $this->userInfo->$attribute;
+    public function requestUserInfo($attribute = null)
+    {
+        $claims = $this->decodeJWT($this->idToken, 1);
+        if ($attribute !== null) {
+            return $claims->$attribute;
         } else {
             return null;
         }
+        /*
+    $user_info_endpoint = $this->getProviderConfigValue("userinfo_endpoint");
+    $schema = 'openid';
+
+    $user_info_endpoint .= "?schema=" . $schema;
+
+    //The accessToken has to be send in the Authorization header, so we create a new array with only this header.
+    $headers = array("Authorization: Bearer {$this->accessToken}");
+
+    $user_json = json_decode($this->fetchURL($user_info_endpoint,null,$headers));
+
+    $this->userInfo = $user_json;
+
+    if($attribute === null) {
+    return $this->userInfo;
+    } else if (array_key_exists($attribute, $this->userInfo)) {
+    return $this->userInfo->$attribute;
+    } else {
+    return null;
+    }
+     */
     }
 
     /**
@@ -801,10 +827,10 @@ class OpenIDConnectClient
 
         // Include header in result? (0 = yes, 1 = no)
         curl_setopt($ch, CURLOPT_HEADER, 0);
-	
+
 	// Allows to follow redirect
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-	    
+
         /**
          * Set cert
          * Otherwise ignore SSL peer verification
@@ -812,19 +838,19 @@ class OpenIDConnectClient
         if (isset($this->certPath)) {
             curl_setopt($ch, CURLOPT_CAINFO, $this->certPath);
         }
-        
+
         if($this->verifyHost) {
             curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         } else {
             curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
         }
-        
+
         if($this->verifyPeer) {
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         } else {
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);        
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         }
-        
+
         // Should cURL return or print out the data? (true = return, false = print)
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 
@@ -890,14 +916,14 @@ class OpenIDConnectClient
     {
         return $this->certPath;
     }
-    
+
     /**
      * @param bool $verifyPeer
      */
     public function setVerifyPeer($verifyPeer) {
         $this->verifyPeer = $verifyPeer;
     }
-    
+
     /**
      * @param bool $verifyHost
      */
@@ -1087,7 +1113,7 @@ class OpenIDConnectClient
     public function getTokenResponse() {
         return $this->tokenResponse;
     }
-	
+
     /**
      * Stores nonce
      *
@@ -1098,18 +1124,18 @@ class OpenIDConnectClient
         $_SESSION['openid_connect_nonce'] = $nonce;
         return $nonce;
     }
-    
+
     /**
-     * Get stored nonce 
+     * Get stored nonce
      *
      * @return string
      */
     protected function getNonce() {
         return $_SESSION['openid_connect_nonce'];
     }
-	
+
     /**
-     * Cleanup nonce 
+     * Cleanup nonce
      *
      * @return void
      */
@@ -1127,18 +1153,18 @@ class OpenIDConnectClient
         $_SESSION['openid_connect_state'] = $state;
         return $state;
     }
-    
+
     /**
-     * Get stored state 
+     * Get stored state
      *
      * @return string
      */
     protected function getState() {
         return $_SESSION['openid_connect_state'];
     }
-    
+
     /**
-     * Cleanup state 
+     * Cleanup state
      *
      * @return void
      */
